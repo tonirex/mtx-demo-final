@@ -1,0 +1,6 @@
+# Slim runtime dependencies for the demo-only image (backend/Dockerfile.demo).
+# Intentionally excludes: azure-ai-projects, azure-identity, azure-cosmos,
+# openai, flask-sock, websockets, python-dotenv, pyyaml.
+# The slim app (src/app_demo.py) only serves the SPA, the bundled static
+# assets, and /video-assets/<id>/<file>. No LLM, no Azure, no WebSocket.
+flask==3.1.2

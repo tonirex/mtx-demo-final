@@ -1,0 +1,82 @@
+# syntax=docker/dockerfile:1
+#
+# Slim demo-only image. Builds the SPA + a minimal Flask runtime that serves:
+#   /                                  -> SPA index.html
+#   /<static>                          -> Vite build output
+#   /api/config, /api/scenarios        -> demo-only stubs
+#   /video-assets/<scenario>/<file>    -> data/video-scenarios fixtures
+#
+# Does NOT include:
+#   - azure-* / openai / flask-sock / pyyaml / dotenv dependencies
+#   - src/services/{analyzers,managers,websocket_handler,case_store}.py
+#   - data/scenarios/ or data/graph-api-canned.json (call-demo / live-mode assets)
+#
+# Build:
+#   docker build --platform linux/amd64 -f backend/Dockerfile.demo -t mtx-demo:slim .
+# Run:
+#   docker run --rm -p 8000:8000 mtx-demo:slim
+# See docs/DEMO_DEPLOYMENT_NOTES.md for cloud deploy.
+
+# -----------------------------------------------------------------------------
+# Stage 1: frontend build (identical to the full image)
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app
+
+RUN npm config set strict-ssl false
+
+COPY frontend/package*.json ./
+RUN npm ci --legacy-peer-deps --include=dev
+
+COPY frontend/src/ ./src/
+COPY frontend/public/ ./public/
+COPY frontend/index.html ./
+COPY frontend/vite.config.ts ./
+COPY frontend/tsconfig.json ./
+COPY frontend/tsconfig.node.json ./
+COPY frontend/eslint.config.js ./
+COPY frontend/.prettierrc ./
+COPY frontend/.prettierignore ./
+
+RUN npx --yes tsc && npx --yes vite build
+
+# -----------------------------------------------------------------------------
+# Stage 2: slim Python runtime (no compilers, no native deps)
+# -----------------------------------------------------------------------------
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FLASK_APP=src/app_demo.py \
+    FLASK_ENV=production \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app
+
+# curl is only kept for the HEALTHCHECK; nothing else is needed.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /bin/bash app
+
+WORKDIR /app
+
+COPY backend/requirements-demo.txt ./
+RUN pip install --no-cache-dir -r requirements-demo.txt
+
+# Only the slim app + the demo's static fixtures.
+COPY --chown=app:app backend/src/app_demo.py ./src/app_demo.py
+COPY --chown=app:app data/video-scenarios/ ./data/video-scenarios/
+
+# SPA bundle from stage 1.
+COPY --from=frontend-builder --chown=app:app /app/static/ ./static/
+
+USER app
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/api/config || exit 1
+
+CMD ["python", "-m", "src.app_demo"]
